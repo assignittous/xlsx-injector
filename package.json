@@ -1,0 +1,30 @@
+{
+  "name": "xlsx-injector",
+  "version": "0.0.1",
+  "description": "Allows injection of values into an XLSX template with styling using angular-styled tags {{}}",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/assignittous/xlsx-injector.git"
+  },
+  "author": "Steven Ng",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/assignittous/xlsx-injector/issues"
+  },
+  "homepage": "https://github.com/assignittous/xlsx-injector",
+  "devDependencies": {
+    "coffee-script": "^1.9.3",
+    "gulp": "^3.9.0",
+    "gulp-coffee": "^2.3.1",
+    "gulp-plumber": "^1.0.1",
+    "gulp-task-master": "^1.0.0"
+  },
+  "dependencies": {
+    "elementtree": "^0.1.6",
+    "node-zip": "^1.1.1"
+  }
+}
