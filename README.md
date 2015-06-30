@@ -2,8 +2,9 @@
 
 This module allows injection of values into an XLSX template with styling using angular-styled tags {{}}
 
-It is heavily based on Martin Aspeli's `xlsx-template` (https://github.com/optilude), but is modified in an 
-opinionated fashion to work better in certain situations.
+It is heavily based on Martin Aspeli's (https://github.com/optilude) `xlsx-template` , but is modified in an 
+opinionated fashion to work better in certain workflows. If you are looking for more flexibility and/or control, 
+you may be better off using the `xlsx-template` (https://github.com/optilude/xlsx-template) library instead.
 
 ## What It Does
 
@@ -19,6 +20,14 @@ If you're looking to create dynamic Excel based reports, this tool will allow yo
 `npm install xlsx-injector`
 
 ## How To Use
+
+### Basic Workflow
+
+* Create a template file as an `.xlsx`
+* Style it up, and use placeholders
+* Using the `xlsx-injector`, load the template `xlsx`
+* Inject substitution values via a Javascript object
+^ Save the file as a new `.xlsx`
 
 ### Placeholders
 
