@@ -92,7 +92,7 @@ above.
 To make this magic happen, you need some code like this:
 
 (Coffeescript example)
-```
+```coffeescript
   XlsxInjector = require('xlsx-injector')
 
   templatePath = "./path/to/template.xlsx"
