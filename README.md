@@ -27,7 +27,7 @@ If you're looking to create dynamic Excel based reports, this tool will allow yo
 * Style it up, and use placeholders
 * Using the `xlsx-injector`, load the template `xlsx`
 * Inject substitution values via a Javascript object
-^ Save the file as a new `.xlsx`
+* Save the file as a new `.xlsx`
 
 ### Placeholders
 

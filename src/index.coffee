@@ -120,8 +120,8 @@ module.exports = do ->
         # `this.sharedStrings`
 
 
-        if cell.attrib.t == 'e'
-          # Look for a cell that might have a #VALUE!
+        if (cell.attrib.t == 'e') || (cell.attrib.t == 'str')
+          # Look for a cell that might have a #VALUE! or a reference to a token {{}}
           cellValue = cell.find('v')
           self.stripValue(cell)
 

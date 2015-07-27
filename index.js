@@ -98,7 +98,7 @@ module.exports = (function() {
         var appendCell, cellValue, string, stringIndex;
         appendCell = true;
         cell.attrib.r = self.getCurrentCell(cell, currentRow, cellsInserted);
-        if (cell.attrib.t === 'e') {
+        if ((cell.attrib.t === 'e') || (cell.attrib.t === 'str')) {
           cellValue = cell.find('v');
           self.stripValue(cell);
         }
