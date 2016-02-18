@@ -9,7 +9,7 @@ path = require('path')
 zip = require('node-zip')
 etree = require('elementtree')
 
-require 'sugar'
+
 
 module.exports = do ->
   DOCUMENT_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument'

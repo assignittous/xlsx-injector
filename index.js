@@ -13,8 +13,6 @@ zip = require('node-zip');
 
 etree = require('elementtree');
 
-require('sugar');
-
 module.exports = (function() {
   var DOCUMENT_RELATIONSHIP, SHARED_STRINGS_RELATIONSHIP, Workbook;
   DOCUMENT_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument';

@@ -139,6 +139,15 @@ To make this magic happen, you need some code like this:
 
 ## Changelog
 
+
+### 0.0.3
+
+* Remove unused sugar dependency
+
+### 0.0.2
+
+* No significant changes
+
 ### 0.0.1
 
 * Initial release
