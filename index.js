@@ -5,7 +5,9 @@
 
 /*global require, module, Buffer */
 'use strict';
-var etree, path, zip;
+var etree, fs, path, zip;
+
+fs = require('fs');
 
 path = require('path');
 
@@ -140,6 +142,14 @@ module.exports = (function() {
   /**
    * Load a .xlsx file from a byte array.
    */
+  Workbook.prototype.loadFile = function(path) {
+    var data;
+    data = fs.readFileSync(path);
+    return this.loadTemplate(data);
+  };
+  Workbook.prototype.writeFile = function(path) {
+    return fs.writeFileSync(path, this.generate(), 'binary');
+  };
   Workbook.prototype.loadTemplate = function(data) {
     var rels, self, workbookPath;
     self = this;
