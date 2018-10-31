@@ -1,59 +1,136 @@
 ###jshint globalstrict:true, devel:true ###
 
-###global require, module, exports, process, __dirname, Buffer ###
-# compile\
+###eslint no-var:0 ###
+
+###global require, module, Buffer ###
 
 'use strict'
-fs = require('fs')
 path = require('path')
-zip = require('node-zip')
+zip = require('jszip')
 etree = require('elementtree')
-
-
-
 module.exports = do ->
   DOCUMENT_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument'
+  CALC_CHAIN_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain'
   SHARED_STRINGS_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings'
+  HYPERLINK_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink'
 
   ###*
   # Create a new workbook. Either pass the raw data of a .xlsx file,
   # or call `loadTemplate()` later.
   ###
 
-  Workbook = (input_path) ->
+  Workbook = (data) ->
     self = this
     self.archive = null
     self.sharedStrings = []
     self.sharedStringsLookup = {}
-
-    self.input_path = null
-    self.output_path = null
-
-    if input_path
-
-      self.loadFile input_path
-
-
-    #if data
-    #  self.loadTemplate data
+    if data
+      self.loadTemplate data
     return
 
+  _get_simple = (obj, desc) ->
+    if desc.indexOf('[') >= 0
+      specification = desc.split(/[[[\]]/)
+      property = specification[0]
+      index = specification[1]
+      return obj[property][index]
+    obj[desc]
 
-  
+  ###*
+  # Based on http://stackoverflow.com/questions/8051975
+  # Mimic https://lodash.com/docs#get
+  ###
+
+  _get = (obj, desc, defaultValue) ->
+    arr = desc.split('.')
+    try
+      while arr.length
+        obj = _get_simple(obj, arr.shift())
+    catch ex
+
+      ### invalid chain ###
+
+      obj = undefined
+    if obj == undefined then defaultValue else obj
+
+  ###*
+  * Delete unused sheets if needed
+  ###
+
+  Workbook::deleteSheet = (sheetName) ->
+    self = this
+    sheet = self.loadSheet(sheetName)
+    sh = self.workbook.find('sheets/sheet[@sheetId=\'' + sheet.id + '\']')
+    self.workbook.find('sheets').remove sh
+    rel = self.workbookRels.find('Relationship[@Id=\'' + sh.attrib['r:id'] + '\']')
+    self.workbookRels.remove rel
+    self._rebuild()
+    self
+
+  ###*
+  * Clone sheets in current workbook template
+  ###
+
+  Workbook::copySheet = (sheetName, copyName) ->
+    self = this
+    sheet = self.loadSheet(sheetName)
+    #filename, name , id, root
+    newSheetIndex = (self.workbook.findall('sheets/sheet').length + 1).toString()
+    fileName = 'worksheets' + '/' + 'sheet' + newSheetIndex + '.xml'
+    arcName = self.prefix + '/' + fileName
+    self.archive.file arcName, etree.tostring(sheet.root)
+    self.archive.files[arcName].options.binary = true
+    newSheet = etree.SubElement(self.workbook.find('sheets'), 'sheet')
+    newSheet.attrib.name = copyName or 'Sheet' + newSheetIndex
+    newSheet.attrib.sheetId = newSheetIndex
+    newSheet.attrib['r:id'] = 'rId' + newSheetIndex
+    newRel = etree.SubElement(self.workbookRels, 'Relationship')
+    newRel.attrib.Type = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet'
+    newRel.attrib.Target = fileName
+    self._rebuild()
+    #    TODO: work with "definedNames"
+    #    var defn = etree.SubElement(self.workbook.find('definedNames'), 'definedName');
+    #
+    self
+
+  ###*
+  *  Partially rebuild after copy/delete sheets
+  ###
+
+  Workbook::_rebuild = ->
+    #each <sheet> 'r:id' attribute in '\xl\workbook.xml'
+    #must point to correct <Relationship> 'Id' in xl\_rels\workbook.xml.rels
+    self = this
+    order = [
+      'worksheet'
+      'theme'
+      'styles'
+      'sharedStrings'
+    ]
+    self.workbookRels.findall('*').sort((rel1, rel2) ->
+      #using order
+      index1 = order.indexOf(path.basename(rel1.attrib.Type))
+      index2 = order.indexOf(path.basename(rel2.attrib.Type))
+      if index1 + index2 == 0
+        if rel1.attrib.Id and rel2.attrib.Id
+          return rel1.attrib.Id.substring(3) - rel2.attrib.Id.substring(3)
+        return rel1._id - (rel2._id)
+      index1 - index2
+    ).forEach (item, index) ->
+      item.attrib.Id = 'rId' + index + 1
+      return
+    self.workbook.findall('sheets/sheet').forEach (item, index) ->
+      item.attrib['r:id'] = 'rId' + index + 1
+      item.attrib.sheetId = (index + 1).toString()
+      return
+    self.archive.file self.prefix + '/' + '_rels' + '/' + path.basename(self.workbookPath) + '.rels', etree.tostring(self.workbookRels)
+    self.archive.file self.workbookPath, etree.tostring(self.workbook)
+    self.sheets = self.loadSheets(self.prefix, self.workbook, self.workbookRels)
+    return
+
   ###*
   # Load a .xlsx file from a byte array.
   ###
-
-
-  Workbook::loadFile = (path)->
-    data = fs.readFileSync(path)
-    @loadTemplate(data)
-
-
-  Workbook::writeFile = (path)->
-
-    fs.writeFileSync path, @generate(),  'binary'
-
 
   Workbook::loadTemplate = (data) ->
     self = this
@@ -68,23 +145,25 @@ module.exports = do ->
     self.workbookPath = workbookPath
     self.prefix = path.dirname(workbookPath)
     self.workbook = etree.parse(self.archive.file(workbookPath).asText()).getroot()
-    # sn:2
-    #self.workbookRels = etree.parse(self.archive.file(path.join(self.prefix, '_rels', path.basename(workbookPath) + '.rels')).asText()).getroot();
-    self.workbookRels = etree.parse(self.archive.file(self.prefix + '/_rels/' + path.basename(workbookPath) + '.rels').asText()).getroot()
-    #
+    self.workbookRels = etree.parse(self.archive.file(self.prefix + '/' + '_rels' + '/' + path.basename(workbookPath) + '.rels').asText()).getroot()
     self.sheets = self.loadSheets(self.prefix, self.workbook, self.workbookRels)
-    # sn:2
-    #self.sharedStringsPath = path.join(self.prefix, self.workbookRels.find("Relationship[@Type='" + SHARED_STRINGS_RELATIONSHIP + "']").attrib.Target);
+    self.calChainRel = self.workbookRels.find('Relationship[@Type=\'' + CALC_CHAIN_RELATIONSHIP + '\']')
+    if self.calChainRel
+      self.calcChainPath = self.prefix + '/' + self.calChainRel.attrib.Target
     self.sharedStringsPath = self.prefix + '/' + self.workbookRels.find('Relationship[@Type=\'' + SHARED_STRINGS_RELATIONSHIP + '\']').attrib.Target
     self.sharedStrings = []
-    etree.parse(self.archive.file(self.sharedStringsPath).asText()).getroot().findall('si/t').forEach (t) ->
+    etree.parse(self.archive.file(self.sharedStringsPath).asText()).getroot().findall('si').forEach (si) ->
+      t = text: ''
+      si.findall('t').forEach (tmp) ->
+        t.text += tmp.text
+        return
+      si.findall('r/t').forEach (tmp) ->
+        t.text += tmp.text
+        return
       self.sharedStrings.push t.text
       self.sharedStringsLookup[t.text] = self.sharedStrings.length - 1
       return
     return
-
-
-  Workbook::purgeBadValues = (sheetName)->
 
   ###*
   # Interpolate values for the sheet with the given number (1-based) or
@@ -94,20 +173,14 @@ module.exports = do ->
   Workbook::substitute = (sheetName, substitutions) ->
     self = this
     sheet = self.loadSheet(sheetName)
+    dimension = sheet.root.find('dimension')
     sheetData = sheet.root.find('sheetData')
     currentRow = null
     totalRowsInserted = 0
+    totalColumnsInserted = 0
     namedTables = self.loadTables(sheet.root, sheet.filename)
     rows = []
-
-    
-
-    
-    
-    
     sheetData.findall('row').forEach (row) ->
-
-      #console.log JSON.stringify row, null, 2
       row.attrib.r = currentRow = self.getCurrentRow(row, totalRowsInserted)
       rows.push row
       cells = []
@@ -118,13 +191,6 @@ module.exports = do ->
         cell.attrib.r = self.getCurrentCell(cell, currentRow, cellsInserted)
         # If c[@t="s"] (string column), look up /c/v@text as integer in
         # `this.sharedStrings`
-
-
-        if (cell.attrib.t == 'e') || (cell.attrib.t == 'str')
-          # Look for a cell that might have a #VALUE! or a reference to a token {{}}
-          cellValue = cell.find('v')
-          self.stripValue(cell)
-
         if cell.attrib.t == 's'
           # Look for a shared string that may contain placeholders
           cellValue = cell.find('v')
@@ -134,18 +200,20 @@ module.exports = do ->
             return
           # Loop over placeholders
           self.extractPlaceholders(string).forEach (placeholder) ->
-
             # Only substitute things for which we have a substitution
-            substitution = substitutions[placeholder.name]
+            substitution = _get(substitutions, placeholder.name, '')
             newCellsInserted = 0
-            if substitution == undefined
-              return
             if placeholder.full and placeholder.type == 'table' and substitution instanceof Array
               newCellsInserted = self.substituteTable(row, newTableRows, cells, cell, namedTables, substitution, placeholder.key)
+              # don't double-insert cells
+              # this applies to arrays only, incorrectly applies to object arrays when there a single row, thus not rendering single row
+              if newCellsInserted != 0 or substitution.length
+                if substitution.length == 1
+                  appendCell = true
+                if substitution[0][placeholder.key] instanceof Array
+                  appendCell = false
               # Did we insert new columns (array values)?
               if newCellsInserted != 0
-                appendCell = false
-                # don't double-insert cells
                 cellsInserted += newCellsInserted
                 self.pushRight self.workbook, sheet.root, cell.attrib.r, newCellsInserted
             else if placeholder.full and placeholder.type == 'normal' and substitution instanceof Array
@@ -156,6 +224,8 @@ module.exports = do ->
                 cellsInserted += newCellsInserted
                 self.pushRight self.workbook, sheet.root, cell.attrib.r, newCellsInserted
             else
+              if placeholder.key
+                substitution = _get(substitutions, placeholder.name + '.' + placeholder.key)
               string = self.substituteScalar(cell, string, placeholder, substitution)
             return
         # if we are inserting columns, we may not want to keep the original cell anymore
@@ -168,6 +238,8 @@ module.exports = do ->
       # Update row spans attribute
       if cellsInserted != 0
         self.updateRowSpan row, cellsInserted
+        if cellsInserted > totalColumnsInserted
+          totalColumnsInserted = cellsInserted
       # Add newly inserted rows
       if newTableRows.length > 0
         newTableRows.forEach (row) ->
@@ -181,9 +253,34 @@ module.exports = do ->
     self.replaceChildren sheetData, rows
     # Update placeholders in table column headers
     self.substituteTableColumnHeaders namedTables, substitutions
+    # Update placeholders in hyperlinks
+    self.substituteHyperlinks sheet.filename, substitutions
+    # Update <dimension /> if we added rows or columns
+    if dimension
+      if totalRowsInserted > 0 or totalColumnsInserted > 0
+        dimensionRange = self.splitRange(dimension.attrib.ref)
+        dimensionEndRef = self.splitRef(dimensionRange.end)
+        dimensionEndRef.row += totalRowsInserted
+        dimensionEndRef.col = self.numToChar(self.charToNum(dimensionEndRef.col) + totalColumnsInserted)
+        dimensionRange.end = self.joinRef(dimensionEndRef)
+        dimension.attrib.ref = self.joinRange(dimensionRange)
+    #Here we are forcing the values in formulas to be recalculated
+    # existing as well as just substituted
+    sheetData.findall('row').forEach (row) ->
+      row.findall('c').forEach (cell) ->
+        formulas = cell.findall('f')
+        if formulas and formulas.length > 0
+          cell.findall('v').forEach (v) ->
+            cell.remove v
+            return
+        return
+      return
     # Write back the modified XML trees
     self.archive.file sheet.filename, etree.tostring(sheet.root)
     self.archive.file self.workbookPath, etree.tostring(self.workbook)
+    # Remove calc chain - Excel will re-build, and we may have moved some formulae
+    if self.calcChainPath and self.archive.file(self.calcChainPath)
+      self.archive.remove self.calcChainPath
     self.writeSharedStrings()
     self.writeTables namedTables
     return
@@ -192,10 +289,11 @@ module.exports = do ->
   # Generate a new binary .xlsx file
   ###
 
-  Workbook::generate = ->
+  Workbook::generate = (options) ->
     self = this
-    # XXX: Getting errors with compression DEFLATE
-    self.archive.generate base64: false
+    if !options
+      options = base64: false
+    self.archive.generate options
 
   # Helpers
   # Write back the new shared strings list
@@ -252,13 +350,12 @@ module.exports = do ->
   # Get a list of sheet ids, names and filenames
 
   Workbook::loadSheets = (prefix, workbook, workbookRels) ->
-    self = this
     sheets = []
     workbook.findall('sheets/sheet').forEach (sheet) ->
       sheetId = sheet.attrib.sheetId
       relId = sheet.attrib['r:id']
       relationship = workbookRels.find('Relationship[@Id=\'' + relId + '\']')
-      filename = path.join(prefix, relationship.attrib.Target)
+      filename = prefix + '/' + relationship.attrib.Target
       sheets.push
         id: parseInt(sheetId, 10)
         name: sheet.attrib.name
@@ -277,11 +374,11 @@ module.exports = do ->
         info = self.sheets[i]
         break
       ++i
+    if info == null and typeof sheet == 'number'
+      #Get the sheet that corresponds to the 0 based index if the id does not work
+      info = self.sheets[sheet - 1]
     if info == null
       throw new Error('Sheet ' + sheet + ' not found')
-    # sn:2
-    info.filename = info.filename.replace(/\\/g, '/')
-    #
     {
       filename: info.filename
       name: info.name
@@ -295,7 +392,7 @@ module.exports = do ->
     self = this
     sheetDirectory = path.dirname(sheetFilename)
     sheetName = path.basename(sheetFilename)
-    relsFilename = path.join(sheetDirectory, '_rels', sheetName + '.rels')
+    relsFilename = sheetDirectory + '/' + '_rels' + '/' + sheetName + '.rels'
     relsFile = self.archive.file(relsFilename)
     tables = []
     # [{filename: ..., root: ....}]
@@ -305,7 +402,7 @@ module.exports = do ->
     sheet.findall('tableParts/tablePart').forEach (tablePart) ->
       relationshipId = tablePart.attrib['r:id']
       target = rels.find('Relationship[@Id=\'' + relationshipId + '\']').attrib.Target
-      tableFilename = path.join(sheetDirectory, target)
+      tableFilename = target.replace('..', self.prefix)
       tableTree = etree.parse(self.archive.file(tableFilename).asText())
       tables.push
         filename: tableFilename
@@ -322,11 +419,45 @@ module.exports = do ->
       return
     return
 
+  #Perform substitution in hyperlinks
+
+  Workbook::substituteHyperlinks = (sheetFilename, substitutions) ->
+    self = this
+    sheetDirectory = path.dirname(sheetFilename)
+    sheetName = path.basename(sheetFilename)
+    relsFilename = sheetDirectory + '/' + '_rels' + '/' + sheetName + '.rels'
+    relsFile = self.archive.file(relsFilename)
+    etree.parse(self.archive.file(self.sharedStringsPath).asText()).getroot()
+    if relsFile == null
+      return
+    rels = etree.parse(relsFile.asText()).getroot()
+    relationships = rels._children
+    newRelationships = []
+    relationships.forEach (relationship) ->
+      newRelationships.push relationship
+      if relationship.attrib.Type == HYPERLINK_RELATIONSHIP
+        target = relationship.attrib.Target
+        #Double-decode due to excel double encoding url placeholders
+        target = decodeURI(decodeURI(target))
+        self.extractPlaceholders(target).forEach (placeholder) ->
+          substitution = substitutions[placeholder.name]
+          if substitution == undefined
+            return
+          target = target.replace(placeholder.placeholder, self.stringify(substitution))
+          relationship.attrib.Target = encodeURI(target)
+          return
+      return
+    self.replaceChildren rels, newRelationships
+    self.archive.file relsFilename, etree.tostring(rels)
+    return
+
   # Perform substitution in table headers
 
   Workbook::substituteTableColumnHeaders = (tables, substitutions) ->
     self = this
     tables.forEach (table) ->
+      `var tableRange`
+      `var autoFilter`
       root = table.root
       columns = root.find('tableColumns')
       autoFilter = root.find('autoFilter')
@@ -369,11 +500,26 @@ module.exports = do ->
         if autoFilter != null
           # XXX: This is a simplification that may stomp on some configurations
           autoFilter.attrib.ref = self.joinRange(tableRange)
+      #update ranges for totalsRowCount
+      tableRoot = table.root
+      tableRange = self.splitRange(tableRoot.attrib.ref)
+      tableStart = self.splitRef(tableRange.start)
+      tableEnd = self.splitRef(tableRange.end)
+      if tableRoot.attrib.totalsRowCount
+        autoFilter = tableRoot.find('autoFilter')
+        if autoFilter != null
+          autoFilter.attrib.ref = self.joinRange(
+            start: self.joinRef(tableStart)
+            end: self.joinRef(tableEnd))
+        ++tableEnd.row
+        tableRoot.attrib.ref = self.joinRange(
+          start: self.joinRef(tableStart)
+          end: self.joinRef(tableEnd))
       return
     return
 
   # Return a list of tokens that may exist in the string.
-  # Keys are: `placeholder` (the full placeholder, including the `{{}}`
+  # Keys are: `placeholder` (the full placeholder, including the `${}`
   # delineators), `name` (the name part of the token), `key` (the object key
   # for `table` tokens), `full` (boolean indicating whether this placeholder
   # is the entirety of the string) and `type` (one of `table` or `cell`)
@@ -398,11 +544,11 @@ module.exports = do ->
   Workbook::splitRef = (ref) ->
     match = ref.match(/(?:(.+)!)?(\$)?([A-Z]+)(\$)?([0-9]+)/)
     {
-      table: match[1] or null
-      colAbsolute: Boolean(match[2])
-      col: match[3]
-      rowAbsolute: Boolean(match[4])
-      row: parseInt(match[5], 10)
+      table: match and match[1] or null
+      colAbsolute: Boolean(match and match[2])
+      col: match and match[3]
+      rowAbsolute: Boolean(match and match[4])
+      row: parseInt(match and match[5], 10)
     }
 
   # Join an object with keys `row` and `col` into a single reference string
@@ -477,13 +623,15 @@ module.exports = do ->
   # Turn a value of any type into a string
 
   Workbook::stringify = (value) ->
-    self = this
     if value instanceof Date
-      value.toISOString()
+      #In Excel date is a number of days since 01/01/1900
+      #           timestamp in ms    to days      + number of days from 1900 to 1970
+      return Number(value.getTime() / (1000 * 60 * 60 * 24) + 25569)
     else if typeof value == 'number' or typeof value == 'boolean'
-      Number(value).toString()
-    else
-      String(value).toString()
+      return Number(value).toString()
+    else if typeof value == 'string'
+      return String(value).toString()
+    ''
 
   # Insert a substitution value into a cell (c tag)
 
@@ -491,42 +639,35 @@ module.exports = do ->
     self = this
     cellValue = cell.find('v')
     stringified = self.stringify(substitution)
-    if typeof substitution == 'number'
-      cell.attrib.t = 'n'
+    if typeof substitution == 'string' and substitution[0] == '='
+      #substitution, started with '=' is a formula substitution
+      formula = new (etree.Element)('f')
+      formula.text = substitution.substr(1)
+      cell.insert 1, formula
+      delete cell.attrib.t
+      #cellValue will be deleted later
+      return formula.text
+    if typeof substitution == 'number' or substitution instanceof Date
+      delete cell.attrib.t
       cellValue.text = stringified
     else if typeof substitution == 'boolean'
       cell.attrib.t = 'b'
-      cellValue.text = stringified
-    else if substitution instanceof Date
-      cell.attrib.t = 'd'
       cellValue.text = stringified
     else
       cell.attrib.t = 's'
       cellValue.text = Number(self.stringIndex(stringified)).toString()
     stringified
 
-
-
-  
-  # Sheets with formulas that have tokens will produce #VALUE! errors because the tokens are text
-  # This will strip the value attribute from the cell to ensure that the sheet recalcs on load
-
-  Workbook::stripValue = (cell) ->
-    cell._children = cell._children.remove (child)->
-      return child.tag == 'v'
-
   # Perform substitution of a single value
+
   Workbook::substituteScalar = (cell, string, placeholder, substitution) ->
     self = this
-    if placeholder.full and typeof substitution == 'string'
-      self.replaceString string, substitution
     if placeholder.full
       self.insertCellValue cell, substitution
     else
       newString = string.replace(placeholder.placeholder, self.stringify(substitution))
       cell.attrib.t = 's'
-      self.replaceString string, newString
-      newString
+      self.insertCellValue cell, newString
 
   # Perform a columns substitution from an array
 
@@ -567,7 +708,7 @@ module.exports = do ->
         newCell = undefined
         newCellsInsertedOnNewRow = 0
         newCells = []
-        value = element[key]
+        value = _get(element, key, '')
         if idx == 0
           # insert in the row where the placeholders are
           if value instanceof Array
@@ -729,6 +870,7 @@ module.exports = do ->
 
   Workbook::pushDown = (workbook, sheet, tables, currentRow, numRows) ->
     self = this
+    mergeCells = sheet.find('mergeCells')
     # Update merged cells below this row
     sheet.findall('mergeCells/mergeCell').forEach (mergeCell) ->
       mergeRange = self.splitRange(mergeCell.attrib.ref)
@@ -740,6 +882,19 @@ module.exports = do ->
         mergeCell.attrib.ref = self.joinRange(
           start: self.joinRef(mergeStart)
           end: self.joinRef(mergeEnd))
+      #add new merge cell
+      if mergeStart.row == currentRow
+        i = 1
+        while i <= numRows
+          newMergeCell = self.cloneElement(mergeCell)
+          mergeStart.row += 1
+          mergeEnd.row += 1
+          newMergeCell.attrib.ref = self.joinRange(
+            start: self.joinRef(mergeStart)
+            end: self.joinRef(mergeEnd))
+          mergeCells.attrib.count += 1
+          mergeCells._children.push newMergeCell
+          i++
       return
     # Update named tables below this row
     tables.forEach (table) ->
@@ -765,15 +920,15 @@ module.exports = do ->
         namedRange = self.splitRange(ref)
         namedStart = self.splitRef(namedRange.start)
         namedEnd = self.splitRef(namedRange.end)
-        if namedStart.row > currentRow
-          namedStart.row += numRows
-          namedEnd.row += numRows
-          name.text = self.joinRange(
-            start: self.joinRef(namedStart)
-            end: self.joinRef(namedEnd))
+        if namedStart
+          if namedStart.row > currentRow
+            namedStart.row += numRows
+            namedEnd.row += numRows
+            name.text = self.joinRange(
+              start: self.joinRef(namedStart)
+              end: self.joinRef(namedEnd))
       else
         namedRef = self.splitRef(ref)
-        namedCol = self.charToNum(namedRef.col)
         if namedRef.row > currentRow
           namedRef.row += numRows
           name.text = self.joinRef(namedRef)
@@ -782,3 +937,5 @@ module.exports = do ->
 
   Workbook
 
+# ---
+# generated by js2coffee 2.2.0

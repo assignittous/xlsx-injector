@@ -1,51 +1,145 @@
 
 /*jshint globalstrict:true, devel:true */
 
-/*global require, module, exports, process, __dirname, Buffer */
-'use strict';
-var etree, fs, path, zip;
+/*eslint no-var:0 */
 
-fs = require('fs');
+/*global require, module, Buffer */
+'use strict';
+var etree, path, zip;
 
 path = require('path');
 
-zip = require('node-zip');
+zip = require('jszip');
 
 etree = require('elementtree');
 
 module.exports = (function() {
-  var DOCUMENT_RELATIONSHIP, SHARED_STRINGS_RELATIONSHIP, Workbook;
+  var CALC_CHAIN_RELATIONSHIP, DOCUMENT_RELATIONSHIP, HYPERLINK_RELATIONSHIP, SHARED_STRINGS_RELATIONSHIP, Workbook, _get, _get_simple;
   DOCUMENT_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument';
+  CALC_CHAIN_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain';
   SHARED_STRINGS_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings';
+  HYPERLINK_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink';
 
   /**
    * Create a new workbook. Either pass the raw data of a .xlsx file,
    * or call `loadTemplate()` later.
    */
-  Workbook = function(input_path) {
+  Workbook = function(data) {
     var self;
     self = this;
     self.archive = null;
     self.sharedStrings = [];
     self.sharedStringsLookup = {};
-    self.input_path = null;
-    self.output_path = null;
-    if (input_path) {
-      self.loadFile(input_path);
+    if (data) {
+      self.loadTemplate(data);
     }
+  };
+  _get_simple = function(obj, desc) {
+    var index, property, specification;
+    if (desc.indexOf('[') >= 0) {
+      specification = desc.split(/[[[\]]/);
+      property = specification[0];
+      index = specification[1];
+      return obj[property][index];
+    }
+    return obj[desc];
+  };
+
+  /**
+   * Based on http://stackoverflow.com/questions/8051975
+   * Mimic https://lodash.com/docs#get
+   */
+  _get = function(obj, desc, defaultValue) {
+    var arr, ex;
+    arr = desc.split('.');
+    try {
+      while (arr.length) {
+        obj = _get_simple(obj, arr.shift());
+      }
+    } catch (error) {
+      ex = error;
+
+      /* invalid chain */
+      obj = void 0;
+    }
+    if (obj === void 0) {
+      return defaultValue;
+    } else {
+      return obj;
+    }
+  };
+
+  /**
+  * Delete unused sheets if needed
+   */
+  Workbook.prototype.deleteSheet = function(sheetName) {
+    var rel, self, sh, sheet;
+    self = this;
+    sheet = self.loadSheet(sheetName);
+    sh = self.workbook.find('sheets/sheet[@sheetId=\'' + sheet.id + '\']');
+    self.workbook.find('sheets').remove(sh);
+    rel = self.workbookRels.find('Relationship[@Id=\'' + sh.attrib['r:id'] + '\']');
+    self.workbookRels.remove(rel);
+    self._rebuild();
+    return self;
+  };
+
+  /**
+  * Clone sheets in current workbook template
+   */
+  Workbook.prototype.copySheet = function(sheetName, copyName) {
+    var arcName, fileName, newRel, newSheet, newSheetIndex, self, sheet;
+    self = this;
+    sheet = self.loadSheet(sheetName);
+    newSheetIndex = (self.workbook.findall('sheets/sheet').length + 1).toString();
+    fileName = 'worksheets' + '/' + 'sheet' + newSheetIndex + '.xml';
+    arcName = self.prefix + '/' + fileName;
+    self.archive.file(arcName, etree.tostring(sheet.root));
+    self.archive.files[arcName].options.binary = true;
+    newSheet = etree.SubElement(self.workbook.find('sheets'), 'sheet');
+    newSheet.attrib.name = copyName || 'Sheet' + newSheetIndex;
+    newSheet.attrib.sheetId = newSheetIndex;
+    newSheet.attrib['r:id'] = 'rId' + newSheetIndex;
+    newRel = etree.SubElement(self.workbookRels, 'Relationship');
+    newRel.attrib.Type = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet';
+    newRel.attrib.Target = fileName;
+    self._rebuild();
+    return self;
+  };
+
+  /**
+  *  Partially rebuild after copy/delete sheets
+   */
+  Workbook.prototype._rebuild = function() {
+    var order, self;
+    self = this;
+    order = ['worksheet', 'theme', 'styles', 'sharedStrings'];
+    self.workbookRels.findall('*').sort(function(rel1, rel2) {
+      var index1, index2;
+      index1 = order.indexOf(path.basename(rel1.attrib.Type));
+      index2 = order.indexOf(path.basename(rel2.attrib.Type));
+      if (index1 + index2 === 0) {
+        if (rel1.attrib.Id && rel2.attrib.Id) {
+          return rel1.attrib.Id.substring(3) - rel2.attrib.Id.substring(3);
+        }
+        return rel1._id - rel2._id;
+      }
+      return index1 - index2;
+    }).forEach(function(item, index) {
+      item.attrib.Id = 'rId' + index + 1;
+    });
+    self.workbook.findall('sheets/sheet').forEach(function(item, index) {
+      item.attrib['r:id'] = 'rId' + index + 1;
+      item.attrib.sheetId = (index + 1).toString();
+    });
+    self.archive.file(self.prefix + '/' + '_rels' + '/' + path.basename(self.workbookPath) + '.rels', etree.tostring(self.workbookRels));
+    self.archive.file(self.workbookPath, etree.tostring(self.workbook));
+    self.sheets = self.loadSheets(self.prefix, self.workbook, self.workbookRels);
   };
 
   /**
    * Load a .xlsx file from a byte array.
    */
-  Workbook.prototype.loadFile = function(path) {
-    var data;
-    data = fs.readFileSync(path);
-    return this.loadTemplate(data);
-  };
-  Workbook.prototype.writeFile = function(path) {
-    return fs.writeFileSync(path, this.generate(), 'binary');
-  };
   Workbook.prototype.loadTemplate = function(data) {
     var rels, self, workbookPath;
     self = this;
@@ -61,28 +155,43 @@ module.exports = (function() {
     self.workbookPath = workbookPath;
     self.prefix = path.dirname(workbookPath);
     self.workbook = etree.parse(self.archive.file(workbookPath).asText()).getroot();
-    self.workbookRels = etree.parse(self.archive.file(self.prefix + '/_rels/' + path.basename(workbookPath) + '.rels').asText()).getroot();
+    self.workbookRels = etree.parse(self.archive.file(self.prefix + '/' + '_rels' + '/' + path.basename(workbookPath) + '.rels').asText()).getroot();
     self.sheets = self.loadSheets(self.prefix, self.workbook, self.workbookRels);
+    self.calChainRel = self.workbookRels.find('Relationship[@Type=\'' + CALC_CHAIN_RELATIONSHIP + '\']');
+    if (self.calChainRel) {
+      self.calcChainPath = self.prefix + '/' + self.calChainRel.attrib.Target;
+    }
     self.sharedStringsPath = self.prefix + '/' + self.workbookRels.find('Relationship[@Type=\'' + SHARED_STRINGS_RELATIONSHIP + '\']').attrib.Target;
     self.sharedStrings = [];
-    etree.parse(self.archive.file(self.sharedStringsPath).asText()).getroot().findall('si/t').forEach(function(t) {
+    etree.parse(self.archive.file(self.sharedStringsPath).asText()).getroot().findall('si').forEach(function(si) {
+      var t;
+      t = {
+        text: ''
+      };
+      si.findall('t').forEach(function(tmp) {
+        t.text += tmp.text;
+      });
+      si.findall('r/t').forEach(function(tmp) {
+        t.text += tmp.text;
+      });
       self.sharedStrings.push(t.text);
       self.sharedStringsLookup[t.text] = self.sharedStrings.length - 1;
     });
   };
-  Workbook.prototype.purgeBadValues = function(sheetName) {};
 
   /**
    * Interpolate values for the sheet with the given number (1-based) or
    * name (if a string) using the given substitutions (an object).
    */
   Workbook.prototype.substitute = function(sheetName, substitutions) {
-    var currentRow, namedTables, rows, self, sheet, sheetData, totalRowsInserted;
+    var currentRow, dimension, dimensionEndRef, dimensionRange, namedTables, rows, self, sheet, sheetData, totalColumnsInserted, totalRowsInserted;
     self = this;
     sheet = self.loadSheet(sheetName);
+    dimension = sheet.root.find('dimension');
     sheetData = sheet.root.find('sheetData');
     currentRow = null;
     totalRowsInserted = 0;
+    totalColumnsInserted = 0;
     namedTables = self.loadTables(sheet.root, sheet.filename);
     rows = [];
     sheetData.findall('row').forEach(function(row) {
@@ -96,10 +205,6 @@ module.exports = (function() {
         var appendCell, cellValue, string, stringIndex;
         appendCell = true;
         cell.attrib.r = self.getCurrentCell(cell, currentRow, cellsInserted);
-        if ((cell.attrib.t === 'e') || (cell.attrib.t === 'str')) {
-          cellValue = cell.find('v');
-          self.stripValue(cell);
-        }
         if (cell.attrib.t === 's') {
           cellValue = cell.find('v');
           stringIndex = parseInt(cellValue.text, 10);
@@ -109,15 +214,19 @@ module.exports = (function() {
           }
           self.extractPlaceholders(string).forEach(function(placeholder) {
             var newCellsInserted, substitution;
-            substitution = substitutions[placeholder.name];
+            substitution = _get(substitutions, placeholder.name, '');
             newCellsInserted = 0;
-            if (substitution === void 0) {
-              return;
-            }
             if (placeholder.full && placeholder.type === 'table' && substitution instanceof Array) {
               newCellsInserted = self.substituteTable(row, newTableRows, cells, cell, namedTables, substitution, placeholder.key);
+              if (newCellsInserted !== 0 || substitution.length) {
+                if (substitution.length === 1) {
+                  appendCell = true;
+                }
+                if (substitution[0][placeholder.key] instanceof Array) {
+                  appendCell = false;
+                }
+              }
               if (newCellsInserted !== 0) {
-                appendCell = false;
                 cellsInserted += newCellsInserted;
                 self.pushRight(self.workbook, sheet.root, cell.attrib.r, newCellsInserted);
               }
@@ -129,6 +238,9 @@ module.exports = (function() {
                 self.pushRight(self.workbook, sheet.root, cell.attrib.r, newCellsInserted);
               }
             } else {
+              if (placeholder.key) {
+                substitution = _get(substitutions, placeholder.name + '.' + placeholder.key);
+              }
               string = self.substituteScalar(cell, string, placeholder, substitution);
             }
           });
@@ -140,6 +252,9 @@ module.exports = (function() {
       self.replaceChildren(row, cells);
       if (cellsInserted !== 0) {
         self.updateRowSpan(row, cellsInserted);
+        if (cellsInserted > totalColumnsInserted) {
+          totalColumnsInserted = cellsInserted;
+        }
       }
       if (newTableRows.length > 0) {
         newTableRows.forEach(function(row) {
@@ -151,8 +266,33 @@ module.exports = (function() {
     });
     self.replaceChildren(sheetData, rows);
     self.substituteTableColumnHeaders(namedTables, substitutions);
+    self.substituteHyperlinks(sheet.filename, substitutions);
+    if (dimension) {
+      if (totalRowsInserted > 0 || totalColumnsInserted > 0) {
+        dimensionRange = self.splitRange(dimension.attrib.ref);
+        dimensionEndRef = self.splitRef(dimensionRange.end);
+        dimensionEndRef.row += totalRowsInserted;
+        dimensionEndRef.col = self.numToChar(self.charToNum(dimensionEndRef.col) + totalColumnsInserted);
+        dimensionRange.end = self.joinRef(dimensionEndRef);
+        dimension.attrib.ref = self.joinRange(dimensionRange);
+      }
+    }
+    sheetData.findall('row').forEach(function(row) {
+      row.findall('c').forEach(function(cell) {
+        var formulas;
+        formulas = cell.findall('f');
+        if (formulas && formulas.length > 0) {
+          cell.findall('v').forEach(function(v) {
+            cell.remove(v);
+          });
+        }
+      });
+    });
     self.archive.file(sheet.filename, etree.tostring(sheet.root));
     self.archive.file(self.workbookPath, etree.tostring(self.workbook));
+    if (self.calcChainPath && self.archive.file(self.calcChainPath)) {
+      self.archive.remove(self.calcChainPath);
+    }
     self.writeSharedStrings();
     self.writeTables(namedTables);
   };
@@ -160,12 +300,15 @@ module.exports = (function() {
   /**
    * Generate a new binary .xlsx file
    */
-  Workbook.prototype.generate = function() {
+  Workbook.prototype.generate = function(options) {
     var self;
     self = this;
-    return self.archive.generate({
-      base64: false
-    });
+    if (!options) {
+      options = {
+        base64: false
+      };
+    }
+    return self.archive.generate(options);
   };
   Workbook.prototype.writeSharedStrings = function() {
     var children, root, self;
@@ -216,15 +359,14 @@ module.exports = (function() {
     return idx;
   };
   Workbook.prototype.loadSheets = function(prefix, workbook, workbookRels) {
-    var self, sheets;
-    self = this;
+    var sheets;
     sheets = [];
     workbook.findall('sheets/sheet').forEach(function(sheet) {
       var filename, relId, relationship, sheetId;
       sheetId = sheet.attrib.sheetId;
       relId = sheet.attrib['r:id'];
       relationship = workbookRels.find('Relationship[@Id=\'' + relId + '\']');
-      filename = path.join(prefix, relationship.attrib.Target);
+      filename = prefix + '/' + relationship.attrib.Target;
       sheets.push({
         id: parseInt(sheetId, 10),
         name: sheet.attrib.name,
@@ -245,10 +387,12 @@ module.exports = (function() {
       }
       ++i;
     }
+    if (info === null && typeof sheet === 'number') {
+      info = self.sheets[sheet - 1];
+    }
     if (info === null) {
       throw new Error('Sheet ' + sheet + ' not found');
     }
-    info.filename = info.filename.replace(/\\/g, '/');
     return {
       filename: info.filename,
       name: info.name,
@@ -261,7 +405,7 @@ module.exports = (function() {
     self = this;
     sheetDirectory = path.dirname(sheetFilename);
     sheetName = path.basename(sheetFilename);
-    relsFilename = path.join(sheetDirectory, '_rels', sheetName + '.rels');
+    relsFilename = sheetDirectory + '/' + '_rels' + '/' + sheetName + '.rels';
     relsFile = self.archive.file(relsFilename);
     tables = [];
     if (relsFile === null) {
@@ -272,7 +416,7 @@ module.exports = (function() {
       var relationshipId, tableFilename, tableTree, target;
       relationshipId = tablePart.attrib['r:id'];
       target = rels.find('Relationship[@Id=\'' + relationshipId + '\']').attrib.Target;
-      tableFilename = path.join(sheetDirectory, target);
+      tableFilename = target.replace('..', self.prefix);
       tableTree = etree.parse(self.archive.file(tableFilename).asText());
       tables.push({
         filename: tableFilename,
@@ -288,11 +432,47 @@ module.exports = (function() {
       self.archive.file(namedTable.filename, etree.tostring(namedTable.root));
     });
   };
+  Workbook.prototype.substituteHyperlinks = function(sheetFilename, substitutions) {
+    var newRelationships, relationships, rels, relsFile, relsFilename, self, sheetDirectory, sheetName;
+    self = this;
+    sheetDirectory = path.dirname(sheetFilename);
+    sheetName = path.basename(sheetFilename);
+    relsFilename = sheetDirectory + '/' + '_rels' + '/' + sheetName + '.rels';
+    relsFile = self.archive.file(relsFilename);
+    etree.parse(self.archive.file(self.sharedStringsPath).asText()).getroot();
+    if (relsFile === null) {
+      return;
+    }
+    rels = etree.parse(relsFile.asText()).getroot();
+    relationships = rels._children;
+    newRelationships = [];
+    relationships.forEach(function(relationship) {
+      var target;
+      newRelationships.push(relationship);
+      if (relationship.attrib.Type === HYPERLINK_RELATIONSHIP) {
+        target = relationship.attrib.Target;
+        target = decodeURI(decodeURI(target));
+        self.extractPlaceholders(target).forEach(function(placeholder) {
+          var substitution;
+          substitution = substitutions[placeholder.name];
+          if (substitution === void 0) {
+            return;
+          }
+          target = target.replace(placeholder.placeholder, self.stringify(substitution));
+          relationship.attrib.Target = encodeURI(target);
+        });
+      }
+    });
+    self.replaceChildren(rels, newRelationships);
+    self.archive.file(relsFilename, etree.tostring(rels));
+  };
   Workbook.prototype.substituteTableColumnHeaders = function(tables, substitutions) {
     var self;
     self = this;
     tables.forEach(function(table) {
-      var autoFilter, columns, idx, inserted, newColumns, root, tableRange;
+      var tableRange;
+      var autoFilter;
+      var autoFilter, columns, idx, inserted, newColumns, root, tableEnd, tableRange, tableRoot, tableStart;
       root = table.root;
       columns = root.find('tableColumns');
       autoFilter = root.find('autoFilter');
@@ -339,6 +519,24 @@ module.exports = (function() {
           autoFilter.attrib.ref = self.joinRange(tableRange);
         }
       }
+      tableRoot = table.root;
+      tableRange = self.splitRange(tableRoot.attrib.ref);
+      tableStart = self.splitRef(tableRange.start);
+      tableEnd = self.splitRef(tableRange.end);
+      if (tableRoot.attrib.totalsRowCount) {
+        autoFilter = tableRoot.find('autoFilter');
+        if (autoFilter !== null) {
+          autoFilter.attrib.ref = self.joinRange({
+            start: self.joinRef(tableStart),
+            end: self.joinRef(tableEnd)
+          });
+        }
+        ++tableEnd.row;
+        tableRoot.attrib.ref = self.joinRange({
+          start: self.joinRef(tableStart),
+          end: self.joinRef(tableEnd)
+        });
+      }
     });
   };
   Workbook.prototype.extractPlaceholders = function(string) {
@@ -361,11 +559,11 @@ module.exports = (function() {
     var match;
     match = ref.match(/(?:(.+)!)?(\$)?([A-Z]+)(\$)?([0-9]+)/);
     return {
-      table: match[1] || null,
-      colAbsolute: Boolean(match[2]),
-      col: match[3],
-      rowAbsolute: Boolean(match[4]),
-      row: parseInt(match[5], 10)
+      table: match && match[1] || null,
+      colAbsolute: Boolean(match && match[2]),
+      col: match && match[3],
+      rowAbsolute: Boolean(match && match[4]),
+      row: parseInt(match && match[5], 10)
     };
   };
   Workbook.prototype.joinRef = function(ref) {
@@ -431,29 +629,32 @@ module.exports = (function() {
     return start.row <= target.row && target.row <= end.row && start.col <= target.col && target.col <= end.col;
   };
   Workbook.prototype.stringify = function(value) {
-    var self;
-    self = this;
     if (value instanceof Date) {
-      return value.toISOString();
+      return Number(value.getTime() / (1000 * 60 * 60 * 24) + 25569);
     } else if (typeof value === 'number' || typeof value === 'boolean') {
       return Number(value).toString();
-    } else {
+    } else if (typeof value === 'string') {
       return String(value).toString();
     }
+    return '';
   };
   Workbook.prototype.insertCellValue = function(cell, substitution) {
-    var cellValue, self, stringified;
+    var cellValue, formula, self, stringified;
     self = this;
     cellValue = cell.find('v');
     stringified = self.stringify(substitution);
-    if (typeof substitution === 'number') {
-      cell.attrib.t = 'n';
+    if (typeof substitution === 'string' && substitution[0] === '=') {
+      formula = new etree.Element('f');
+      formula.text = substitution.substr(1);
+      cell.insert(1, formula);
+      delete cell.attrib.t;
+      return formula.text;
+    }
+    if (typeof substitution === 'number' || substitution instanceof Date) {
+      delete cell.attrib.t;
       cellValue.text = stringified;
     } else if (typeof substitution === 'boolean') {
       cell.attrib.t = 'b';
-      cellValue.text = stringified;
-    } else if (substitution instanceof Date) {
-      cell.attrib.t = 'd';
       cellValue.text = stringified;
     } else {
       cell.attrib.t = 's';
@@ -461,24 +662,15 @@ module.exports = (function() {
     }
     return stringified;
   };
-  Workbook.prototype.stripValue = function(cell) {
-    return cell._children = cell._children.remove(function(child) {
-      return child.tag === 'v';
-    });
-  };
   Workbook.prototype.substituteScalar = function(cell, string, placeholder, substitution) {
     var newString, self;
     self = this;
-    if (placeholder.full && typeof substitution === 'string') {
-      self.replaceString(string, substitution);
-    }
     if (placeholder.full) {
       return self.insertCellValue(cell, substitution);
     } else {
       newString = string.replace(placeholder.placeholder, self.stringify(substitution));
       cell.attrib.t = 's';
-      self.replaceString(string, newString);
-      return newString;
+      return self.insertCellValue(cell, newString);
     }
   };
   Workbook.prototype.substituteArray = function(cells, cell, substitution) {
@@ -518,7 +710,7 @@ module.exports = (function() {
         newCell = void 0;
         newCellsInsertedOnNewRow = 0;
         newCells = [];
-        value = element[key];
+        value = _get(element, key, '');
         if (idx === 0) {
           if (value instanceof Array) {
             newCellsInserted = self.substituteArray(cells, cell, value);
@@ -669,10 +861,11 @@ module.exports = (function() {
     });
   };
   Workbook.prototype.pushDown = function(workbook, sheet, tables, currentRow, numRows) {
-    var self;
+    var mergeCells, self;
     self = this;
+    mergeCells = sheet.find('mergeCells');
     sheet.findall('mergeCells/mergeCell').forEach(function(mergeCell) {
-      var mergeEnd, mergeRange, mergeStart;
+      var i, mergeEnd, mergeRange, mergeStart, newMergeCell;
       mergeRange = self.splitRange(mergeCell.attrib.ref);
       mergeStart = self.splitRef(mergeRange.start);
       mergeEnd = self.splitRef(mergeRange.end);
@@ -683,6 +876,21 @@ module.exports = (function() {
           start: self.joinRef(mergeStart),
           end: self.joinRef(mergeEnd)
         });
+      }
+      if (mergeStart.row === currentRow) {
+        i = 1;
+        while (i <= numRows) {
+          newMergeCell = self.cloneElement(mergeCell);
+          mergeStart.row += 1;
+          mergeEnd.row += 1;
+          newMergeCell.attrib.ref = self.joinRange({
+            start: self.joinRef(mergeStart),
+            end: self.joinRef(mergeEnd)
+          });
+          mergeCells.attrib.count += 1;
+          mergeCells._children.push(newMergeCell);
+          i++;
+        }
       }
     });
     tables.forEach(function(table) {
@@ -705,23 +913,24 @@ module.exports = (function() {
       }
     });
     workbook.findall('definedNames/definedName').forEach(function(name) {
-      var namedCol, namedEnd, namedRange, namedRef, namedStart, ref;
+      var namedEnd, namedRange, namedRef, namedStart, ref;
       ref = name.text;
       if (self.isRange(ref)) {
         namedRange = self.splitRange(ref);
         namedStart = self.splitRef(namedRange.start);
         namedEnd = self.splitRef(namedRange.end);
-        if (namedStart.row > currentRow) {
-          namedStart.row += numRows;
-          namedEnd.row += numRows;
-          name.text = self.joinRange({
-            start: self.joinRef(namedStart),
-            end: self.joinRef(namedEnd)
-          });
+        if (namedStart) {
+          if (namedStart.row > currentRow) {
+            namedStart.row += numRows;
+            namedEnd.row += numRows;
+            name.text = self.joinRange({
+              start: self.joinRef(namedStart),
+              end: self.joinRef(namedEnd)
+            });
+          }
         }
       } else {
         namedRef = self.splitRef(ref);
-        namedCol = self.charToNum(namedRef.col);
         if (namedRef.row > currentRow) {
           namedRef.row += numRows;
           name.text = self.joinRef(namedRef);
