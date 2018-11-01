@@ -3,19 +3,12 @@ fs = require('fs-extra')
 
 data = fs.readJsonSync('./test/array.json')
 
-
-
-#templateFile = fs.readFileSync()
-
 template = new XlsxTemplate
 
 template.loadFile './test/template.xlsx'
 
-sheetNumber = 1
-
 template.sheets.forEach (sheet)->
   template.substitute sheet.id,
     rows: data
-
 
 template.writeFile './test/output.xlsx'
