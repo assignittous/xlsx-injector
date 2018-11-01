@@ -5,15 +5,17 @@ data = fs.readJsonSync('./test/array.json')
 
 
 
-templateFile = fs.readFileSync('./test/template.xlsx')
+#templateFile = fs.readFileSync()
 
-template = new XlsxTemplate(templateFile)
+template = new XlsxTemplate
+
+template.loadFile './test/template.xlsx'
 
 sheetNumber = 1
 
-template.substitute sheetNumber,
-  rows: data
+template.sheets.forEach (sheet)->
+  template.substitute sheet.id,
+    rows: data
 
-outputFile = template.generate()
 
-fs.writeFileSync('./test/output.xlsx', outputFile, 'binary')
+template.writeFile './test/output.xlsx'

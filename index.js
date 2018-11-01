@@ -4,7 +4,7 @@
 'use strict';
 var etree, fs, path, zip;
 
-fs = require('fs');
+fs = require('fs-extra');
 
 path = require('path');
 
@@ -733,6 +733,9 @@ module.exports = (function() {
     }
     return stringified;
   };
+  // Sheets with formulas that have tokens will produce #VALUE! errors because the tokens are text
+  // This will strip the value attribute from the cell to ensure that the sheet recalcs on load
+
   // Perform substitution of a single value
   Workbook.prototype.substituteScalar = function(cell, string, placeholder, substitution) {
     var newString, self;

@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "elementtree": "^0.1.6",
+    "fs-extra": "^7.0.0",
     "jszip": "^2.6.1"
   }
 }

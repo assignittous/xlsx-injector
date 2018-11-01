@@ -1,4 +1,4 @@
-var XlsxTemplate, data, fs, outputFile, sheetNumber, template, templateFile;
+var XlsxTemplate, data, fs, sheetNumber, template;
 
 XlsxTemplate = require('./index.js');
 
@@ -6,16 +6,17 @@ fs = require('fs-extra');
 
 data = fs.readJsonSync('./test/array.json');
 
-templateFile = fs.readFileSync('./test/template.xlsx');
+//templateFile = fs.readFileSync()
+template = new XlsxTemplate;
 
-template = new XlsxTemplate(templateFile);
+template.loadFile('./test/template.xlsx');
 
 sheetNumber = 1;
 
-template.substitute(sheetNumber, {
-  rows: data
+template.sheets.forEach(function(sheet) {
+  return template.substitute(sheet.id, {
+    rows: data
+  });
 });
 
-outputFile = template.generate();
-
-fs.writeFileSync('./test/output.xlsx', outputFile, 'binary');
+template.writeFile('./test/output.xlsx');

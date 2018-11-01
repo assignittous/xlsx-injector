@@ -5,7 +5,7 @@
 ###global require, module, Buffer ###
 
 'use strict'
-fs = require('fs')
+fs = require('fs-extra')
 path = require('path')
 zip = require('jszip')
 etree = require('elementtree')
@@ -200,6 +200,9 @@ module.exports = do ->
         cell.attrib.r = self.getCurrentCell(cell, currentRow, cellsInserted)
         # If c[@t="s"] (string column), look up /c/v@text as integer in
         # `this.sharedStrings`
+
+
+
         if cell.attrib.t == 's'
           # Look for a shared string that may contain placeholders
           cellValue = cell.find('v')
@@ -666,6 +669,12 @@ module.exports = do ->
       cell.attrib.t = 's'
       cellValue.text = Number(self.stringIndex(stringified)).toString()
     stringified
+
+
+  # Sheets with formulas that have tokens will produce #VALUE! errors because the tokens are text
+  # This will strip the value attribute from the cell to ensure that the sheet recalcs on load
+
+
 
   # Perform substitution of a single value
 
