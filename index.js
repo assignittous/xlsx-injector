@@ -1,8 +1,5 @@
-
 /*jshint globalstrict:true, devel:true */
-
 /*eslint no-var:0 */
-
 /*global require, module, Buffer */
 'use strict';
 var etree, fs, path, zip;
@@ -16,16 +13,19 @@ zip = require('jszip');
 etree = require('elementtree');
 
 module.exports = (function() {
+  /**
+   * Create a new workbook. Either pass the raw data of a .xlsx file,
+   * or call `loadTemplate()` later.
+   */
+  /**
+   * Based on http://stackoverflow.com/questions/8051975
+   * Mimic https://lodash.com/docs#get
+   */
   var CALC_CHAIN_RELATIONSHIP, DOCUMENT_RELATIONSHIP, HYPERLINK_RELATIONSHIP, SHARED_STRINGS_RELATIONSHIP, Workbook, _get, _get_simple;
   DOCUMENT_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument';
   CALC_CHAIN_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain';
   SHARED_STRINGS_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings';
   HYPERLINK_RELATIONSHIP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink';
-
-  /**
-   * Create a new workbook. Either pass the raw data of a .xlsx file,
-   * or call `loadTemplate()` later.
-   */
   Workbook = function(data) {
     var self;
     self = this;
@@ -46,11 +46,6 @@ module.exports = (function() {
     }
     return obj[desc];
   };
-
-  /**
-   * Based on http://stackoverflow.com/questions/8051975
-   * Mimic https://lodash.com/docs#get
-   */
   _get = function(obj, desc, defaultValue) {
     var arr, ex;
     arr = desc.split('.');
@@ -60,8 +55,6 @@ module.exports = (function() {
       }
     } catch (error) {
       ex = error;
-
-      /* invalid chain */
       obj = void 0;
     }
     if (obj === void 0) {
@@ -70,7 +63,6 @@ module.exports = (function() {
       return obj;
     }
   };
-
   /**
   * Delete unused sheets if needed
    */
@@ -85,7 +77,6 @@ module.exports = (function() {
     self._rebuild();
     return self;
   };
-
   /**
   * Clone sheets in current workbook template
    */
@@ -93,6 +84,7 @@ module.exports = (function() {
     var arcName, fileName, newRel, newSheet, newSheetIndex, self, sheet;
     self = this;
     sheet = self.loadSheet(sheetName);
+    //filename, name , id, root
     newSheetIndex = (self.workbook.findall('sheets/sheet').length + 1).toString();
     fileName = 'worksheets' + '/' + 'sheet' + newSheetIndex + '.xml';
     arcName = self.prefix + '/' + fileName;
@@ -106,18 +98,23 @@ module.exports = (function() {
     newRel.attrib.Type = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet';
     newRel.attrib.Target = fileName;
     self._rebuild();
+    //    TODO: work with "definedNames"
+    //    var defn = etree.SubElement(self.workbook.find('definedNames'), 'definedName');
+
     return self;
   };
-
   /**
   *  Partially rebuild after copy/delete sheets
    */
   Workbook.prototype._rebuild = function() {
     var order, self;
+    //each <sheet> 'r:id' attribute in '\xl\workbook.xml'
+    //must point to correct <Relationship> 'Id' in xl\_rels\workbook.xml.rels
     self = this;
     order = ['worksheet', 'theme', 'styles', 'sharedStrings'];
     self.workbookRels.findall('*').sort(function(rel1, rel2) {
       var index1, index2;
+      //using order
       index1 = order.indexOf(path.basename(rel1.attrib.Type));
       index2 = order.indexOf(path.basename(rel2.attrib.Type));
       if (index1 + index2 === 0) {
@@ -138,7 +135,6 @@ module.exports = (function() {
     self.archive.file(self.workbookPath, etree.tostring(self.workbook));
     self.sheets = self.loadSheets(self.prefix, self.workbook, self.workbookRels);
   };
-
   /**
    * Load a .xlsx file from a byte array.
    */
@@ -160,6 +156,7 @@ module.exports = (function() {
       base64: false,
       checkCRC32: true
     });
+    // Load relationships
     rels = etree.parse(self.archive.file('_rels/.rels').asText()).getroot();
     workbookPath = rels.find('Relationship[@Type=\'' + DOCUMENT_RELATIONSHIP + '\']').attrib.Target;
     self.workbookPath = workbookPath;
@@ -188,7 +185,6 @@ module.exports = (function() {
       self.sharedStringsLookup[t.text] = self.sharedStrings.length - 1;
     });
   };
-
   /**
    * Interpolate values for the sheet with the given number (1-based) or
    * name (if a string) using the given substitutions (an object).
@@ -215,19 +211,26 @@ module.exports = (function() {
         var appendCell, cellValue, string, stringIndex;
         appendCell = true;
         cell.attrib.r = self.getCurrentCell(cell, currentRow, cellsInserted);
+        // If c[@t="s"] (string column), look up /c/v@text as integer in
+        // `this.sharedStrings`
         if (cell.attrib.t === 's') {
+          // Look for a shared string that may contain placeholders
           cellValue = cell.find('v');
           stringIndex = parseInt(cellValue.text, 10);
           string = self.sharedStrings[stringIndex];
           if (string === void 0) {
             return;
           }
+          // Loop over placeholders
           self.extractPlaceholders(string).forEach(function(placeholder) {
             var newCellsInserted, substitution;
+            // Only substitute things for which we have a substitution
             substitution = _get(substitutions, placeholder.name, '');
             newCellsInserted = 0;
             if (placeholder.full && placeholder.type === 'table' && substitution instanceof Array) {
               newCellsInserted = self.substituteTable(row, newTableRows, cells, cell, namedTables, substitution, placeholder.key);
+              // don't double-insert cells
+              // this applies to arrays only, incorrectly applies to object arrays when there a single row, thus not rendering single row
               if (newCellsInserted !== 0 || substitution.length) {
                 if (substitution.length === 1) {
                   appendCell = true;
@@ -236,12 +239,14 @@ module.exports = (function() {
                   appendCell = false;
                 }
               }
+              // Did we insert new columns (array values)?
               if (newCellsInserted !== 0) {
                 cellsInserted += newCellsInserted;
                 self.pushRight(self.workbook, sheet.root, cell.attrib.r, newCellsInserted);
               }
             } else if (placeholder.full && placeholder.type === 'normal' && substitution instanceof Array) {
               appendCell = false;
+              // don't double-insert cells
               newCellsInserted = self.substituteArray(cells, cell, substitution);
               if (newCellsInserted !== 0) {
                 cellsInserted += newCellsInserted;
@@ -255,17 +260,22 @@ module.exports = (function() {
             }
           });
         }
+        // if we are inserting columns, we may not want to keep the original cell anymore
         if (appendCell) {
           cells.push(cell);
         }
       });
+      // cells loop
+      // We may have inserted columns, so re-build the children of the row
       self.replaceChildren(row, cells);
+      // Update row spans attribute
       if (cellsInserted !== 0) {
         self.updateRowSpan(row, cellsInserted);
         if (cellsInserted > totalColumnsInserted) {
           totalColumnsInserted = cellsInserted;
         }
       }
+      // Add newly inserted rows
       if (newTableRows.length > 0) {
         newTableRows.forEach(function(row) {
           rows.push(row);
@@ -274,9 +284,14 @@ module.exports = (function() {
         self.pushDown(self.workbook, sheet.root, namedTables, currentRow, newTableRows.length);
       }
     });
+    // rows loop
+    // We may have inserted rows, so re-build the children of the sheetData
     self.replaceChildren(sheetData, rows);
+    // Update placeholders in table column headers
     self.substituteTableColumnHeaders(namedTables, substitutions);
+    // Update placeholders in hyperlinks
     self.substituteHyperlinks(sheet.filename, substitutions);
+    // Update <dimension /> if we added rows or columns
     if (dimension) {
       if (totalRowsInserted > 0 || totalColumnsInserted > 0) {
         dimensionRange = self.splitRange(dimension.attrib.ref);
@@ -287,6 +302,8 @@ module.exports = (function() {
         dimension.attrib.ref = self.joinRange(dimensionRange);
       }
     }
+    //Here we are forcing the values in formulas to be recalculated
+    // existing as well as just substituted
     sheetData.findall('row').forEach(function(row) {
       row.findall('c').forEach(function(cell) {
         var formulas;
@@ -298,15 +315,16 @@ module.exports = (function() {
         }
       });
     });
+    // Write back the modified XML trees
     self.archive.file(sheet.filename, etree.tostring(sheet.root));
     self.archive.file(self.workbookPath, etree.tostring(self.workbook));
+    // Remove calc chain - Excel will re-build, and we may have moved some formulae
     if (self.calcChainPath && self.archive.file(self.calcChainPath)) {
       self.archive.remove(self.calcChainPath);
     }
     self.writeSharedStrings();
     self.writeTables(namedTables);
   };
-
   /**
    * Generate a new binary .xlsx file
    */
@@ -320,6 +338,8 @@ module.exports = (function() {
     }
     return self.archive.generate(options);
   };
+  // Helpers
+  // Write back the new shared strings list
   Workbook.prototype.writeSharedStrings = function() {
     var children, root, self;
     self = this;
@@ -338,6 +358,7 @@ module.exports = (function() {
     root.attrib.uniqueCount = self.sharedStrings.length;
     self.archive.file(self.sharedStringsPath, etree.tostring(root));
   };
+  // Add a new shared string
   Workbook.prototype.addSharedString = function(s) {
     var idx, self;
     self = this;
@@ -346,6 +367,7 @@ module.exports = (function() {
     self.sharedStringsLookup[s] = idx;
     return idx;
   };
+  // Get the number of a shared string, adding a new one if necessary.
   Workbook.prototype.stringIndex = function(s) {
     var idx, self;
     self = this;
@@ -355,6 +377,8 @@ module.exports = (function() {
     }
     return idx;
   };
+  // Replace a shared string with a new one at the same index. Return the
+  // index.
   Workbook.prototype.replaceString = function(oldString, newString) {
     var idx, self;
     self = this;
@@ -368,6 +392,7 @@ module.exports = (function() {
     }
     return idx;
   };
+  // Get a list of sheet ids, names and filenames
   Workbook.prototype.loadSheets = function(prefix, workbook, workbookRels) {
     var sheets;
     sheets = [];
@@ -385,6 +410,7 @@ module.exports = (function() {
     });
     return sheets;
   };
+  // Get sheet a sheet, including filename and name
   Workbook.prototype.loadSheet = function(sheet) {
     var i, info, self;
     self = this;
@@ -398,6 +424,7 @@ module.exports = (function() {
       ++i;
     }
     if (info === null && typeof sheet === 'number') {
+      //Get the sheet that corresponds to the 0 based index if the id does not work
       info = self.sheets[sheet - 1];
     }
     if (info === null) {
@@ -410,6 +437,7 @@ module.exports = (function() {
       root: etree.parse(self.archive.file(info.filename).asText()).getroot()
     };
   };
+  // Load tables for a given sheet
   Workbook.prototype.loadTables = function(sheet, sheetFilename) {
     var rels, relsFile, relsFilename, self, sheetDirectory, sheetName, tables;
     self = this;
@@ -418,6 +446,7 @@ module.exports = (function() {
     relsFilename = sheetDirectory + '/' + '_rels' + '/' + sheetName + '.rels';
     relsFile = self.archive.file(relsFilename);
     tables = [];
+    // [{filename: ..., root: ....}]
     if (relsFile === null) {
       return tables;
     }
@@ -435,6 +464,7 @@ module.exports = (function() {
     });
     return tables;
   };
+  // Write back possibly-modified tables
   Workbook.prototype.writeTables = function(tables) {
     var self;
     self = this;
@@ -442,6 +472,7 @@ module.exports = (function() {
       self.archive.file(namedTable.filename, etree.tostring(namedTable.root));
     });
   };
+  //Perform substitution in hyperlinks
   Workbook.prototype.substituteHyperlinks = function(sheetFilename, substitutions) {
     var newRelationships, relationships, rels, relsFile, relsFilename, self, sheetDirectory, sheetName;
     self = this;
@@ -461,6 +492,7 @@ module.exports = (function() {
       newRelationships.push(relationship);
       if (relationship.attrib.Type === HYPERLINK_RELATIONSHIP) {
         target = relationship.attrib.Target;
+        //Double-decode due to excel double encoding url placeholders
         target = decodeURI(decodeURI(target));
         self.extractPlaceholders(target).forEach(function(placeholder) {
           var substitution;
@@ -476,6 +508,7 @@ module.exports = (function() {
     self.replaceChildren(rels, newRelationships);
     self.archive.file(relsFilename, etree.tostring(rels));
   };
+  // Perform substitution in table headers
   Workbook.prototype.substituteTableColumnHeaders = function(tables, substitutions) {
     var self;
     self = this;
@@ -502,6 +535,7 @@ module.exports = (function() {
           if (substitution === void 0) {
             return;
           }
+          // Array -> new columns
           if (placeholder.full && placeholder.type === 'normal' && substitution instanceof Array) {
             substitution.forEach(function(element, i) {
               var newCol;
@@ -516,19 +550,23 @@ module.exports = (function() {
               newCol.attrib.name = self.stringify(element);
             });
           } else {
+            // Normal placeholder
             name = name.replace(placeholder.placeholder, self.stringify(substitution));
             col.attrib.name = name;
           }
         });
       });
       self.replaceChildren(columns, newColumns);
+      // Update range if we inserted columns
       if (inserted > 0) {
         columns.attrib.count = Number(idx).toString();
         root.attrib.ref = self.joinRange(tableRange);
         if (autoFilter !== null) {
+          // XXX: This is a simplification that may stomp on some configurations
           autoFilter.attrib.ref = self.joinRange(tableRange);
         }
       }
+      //update ranges for totalsRowCount
       tableRoot = table.root;
       tableRange = self.splitRange(tableRoot.attrib.ref);
       tableStart = self.splitRef(tableRange.start);
@@ -549,8 +587,14 @@ module.exports = (function() {
       }
     });
   };
+  // Return a list of tokens that may exist in the string.
+  // Keys are: `placeholder` (the full placeholder, including the `${}`
+  // delineators), `name` (the name part of the token), `key` (the object key
+  // for `table` tokens), `full` (boolean indicating whether this placeholder
+  // is the entirety of the string) and `type` (one of `table` or `cell`)
   Workbook.prototype.extractPlaceholders = function(string) {
     var match, matches, re;
+    // Yes, that's right. It's a bunch of brackets and question marks and stuff.
     re = /\{{(?:(.+?):)?(.+?)(?:\.(.+?))?}}/g;
     match = null;
     matches = [];
@@ -565,6 +609,8 @@ module.exports = (function() {
     }
     return matches;
   };
+  // Split a reference into an object with keys `row` and `col` and,
+  // optionally, `table`, `rowAbsolute` and `colAbsolute`.
   Workbook.prototype.splitRef = function(ref) {
     var match;
     match = ref.match(/(?:(.+)!)?(\$)?([A-Z]+)(\$)?([0-9]+)/);
@@ -576,9 +622,11 @@ module.exports = (function() {
       row: parseInt(match && match[5], 10)
     };
   };
+  // Join an object with keys `row` and `col` into a single reference string
   Workbook.prototype.joinRef = function(ref) {
     return (ref.table ? ref.table + '!' : '') + (ref.colAbsolute ? '$' : '') + ref.col.toUpperCase() + (ref.rowAbsolute ? '$' : '') + Number(ref.row).toString();
   };
+  // Get the next column's cell reference given a reference like "B2".
   Workbook.prototype.nextCol = function(ref) {
     var self;
     self = this;
@@ -587,12 +635,14 @@ module.exports = (function() {
       return self.numToChar(self.charToNum(match) + 1);
     });
   };
+  // Get the next row's cell reference given a reference like "B2".
   Workbook.prototype.nextRow = function(ref) {
     ref = ref.toUpperCase();
     return ref.replace(/[0-9]+/, function(match) {
       return (parseInt(match, 10) + 1).toString();
     });
   };
+  // Turn a reference like "AA" into a number like 27
   Workbook.prototype.charToNum = function(str) {
     var idx, iteration, multiplier, num, thisChar;
     num = 0;
@@ -600,13 +650,14 @@ module.exports = (function() {
     iteration = 0;
     while (idx >= 0) {
       thisChar = str.charCodeAt(idx) - 64;
-      multiplier = Math.pow(26, iteration);
+      multiplier = 26 ** iteration;
       num += multiplier * thisChar;
       --idx;
       ++iteration;
     }
     return num;
   };
+  // Turn a number like 27 into a reference like "AA"
   Workbook.prototype.numToChar = function(num) {
     var charCode, i, remainder, str;
     str = '';
@@ -615,7 +666,9 @@ module.exports = (function() {
       remainder = num % 26;
       charCode = remainder + 64;
       num = (num - remainder) / 26;
+      // Compensate for the fact that we don't represent zero, e.g. A = 1, Z = 26, but AA = 27
       if (remainder === 0) {
+        // 26 -> Z
         charCode = 90;
         --num;
       }
@@ -624,9 +677,11 @@ module.exports = (function() {
     }
     return str;
   };
+  // Is ref a range?
   Workbook.prototype.isRange = function(ref) {
     return ref.indexOf(':') !== -1;
   };
+  // Is ref inside the table defined by startRef and endRef?
   Workbook.prototype.isWithin = function(ref, startRef, endRef) {
     var end, self, start, target;
     self = this;
@@ -638,8 +693,11 @@ module.exports = (function() {
     target.col = self.charToNum(target.col);
     return start.row <= target.row && target.row <= end.row && start.col <= target.col && target.col <= end.col;
   };
+  // Turn a value of any type into a string
   Workbook.prototype.stringify = function(value) {
     if (value instanceof Date) {
+      //In Excel date is a number of days since 01/01/1900
+      //           timestamp in ms    to days      + number of days from 1900 to 1970
       return Number(value.getTime() / (1000 * 60 * 60 * 24) + 25569);
     } else if (typeof value === 'number' || typeof value === 'boolean') {
       return Number(value).toString();
@@ -648,16 +706,19 @@ module.exports = (function() {
     }
     return '';
   };
+  // Insert a substitution value into a cell (c tag)
   Workbook.prototype.insertCellValue = function(cell, substitution) {
     var cellValue, formula, self, stringified;
     self = this;
     cellValue = cell.find('v');
     stringified = self.stringify(substitution);
     if (typeof substitution === 'string' && substitution[0] === '=') {
+      //substitution, started with '=' is a formula substitution
       formula = new etree.Element('f');
       formula.text = substitution.substr(1);
       cell.insert(1, formula);
       delete cell.attrib.t;
+      //cellValue will be deleted later
       return formula.text;
     }
     if (typeof substitution === 'number' || substitution instanceof Date) {
@@ -672,6 +733,7 @@ module.exports = (function() {
     }
     return stringified;
   };
+  // Perform substitution of a single value
   Workbook.prototype.substituteScalar = function(cell, string, placeholder, substitution) {
     var newString, self;
     self = this;
@@ -683,11 +745,13 @@ module.exports = (function() {
       return self.insertCellValue(cell, newString);
     }
   };
+  // Perform a columns substitution from an array
   Workbook.prototype.substituteArray = function(cells, cell, substitution) {
     var currentCell, newCellsInserted, self;
     self = this;
     newCellsInserted = -1;
     currentCell = cell.attrib.r;
+    // add a cell for each element in the list
     substitution.forEach(function(element) {
       var newCell;
       ++newCellsInserted;
@@ -701,10 +765,14 @@ module.exports = (function() {
     });
     return newCellsInserted;
   };
+  // Perform a table substitution. May update `newTableRows` and `cells` and change `cell`.
+  // Returns total number of new cells inserted on the original row.
   Workbook.prototype.substituteTable = function(row, newTableRows, cells, cell, namedTables, substitution, key) {
     var newCellsInserted, parentTables, self;
     self = this;
     newCellsInserted = 0;
+    // on the original row
+    // if no elements, blank the cell, but don't delete it
     if (substitution.length === 0) {
       delete cell.attrib.t;
       self.replaceChildren(cell, []);
@@ -722,12 +790,15 @@ module.exports = (function() {
         newCells = [];
         value = _get(element, key, '');
         if (idx === 0) {
+          // insert in the row where the placeholders are
           if (value instanceof Array) {
             newCellsInserted = self.substituteArray(cells, cell, value);
           } else {
             self.insertCellValue(cell, value);
           }
         } else {
+          // insert new rows (or reuse rows just inserted)
+          // Do we have an existing row to use? If not, create one.
           if (idx - 1 < newTableRows.length) {
             newRow = newTableRows[idx - 1];
           } else {
@@ -735,6 +806,7 @@ module.exports = (function() {
             newRow.attrib.r = self.getCurrentRow(row, newTableRows.length + 1);
             newTableRows.push(newRow);
           }
+          // Create a new cell
           newCell = self.cloneElement(cell);
           newCell.attrib.r = self.joinRef({
             row: newRow.attrib.r,
@@ -742,14 +814,17 @@ module.exports = (function() {
           });
           if (value instanceof Array) {
             newCellsInsertedOnNewRow = self.substituteArray(newCells, newCell, value);
+            // Add each of the new cells created by substituteArray()
             newCells.forEach(function(newCell) {
               newRow.append(newCell);
             });
             self.updateRowSpan(newRow, newCellsInsertedOnNewRow);
           } else {
             self.insertCellValue(newCell, value);
+            // Add the cell that previously held the placeholder
             newRow.append(newCell);
           }
+          // expand named table range if necessary
           parentTables.forEach(function(namedTable) {
             var autoFilter, range, tableRoot;
             tableRoot = namedTable.root;
@@ -759,6 +834,7 @@ module.exports = (function() {
               range.end = self.nextRow(range.end);
               tableRoot.attrib.ref = self.joinRange(range);
               if (autoFilter !== null) {
+                // XXX: This is a simplification that may stomp on some configurations
                 autoFilter.attrib.ref = tableRoot.attrib.ref;
               }
             }
@@ -768,6 +844,7 @@ module.exports = (function() {
     }
     return newCellsInserted;
   };
+  // Clone an element. If `deep` is true, recursively clone children
   Workbook.prototype.cloneElement = function(element, deep) {
     var newElement, self;
     self = this;
@@ -781,15 +858,20 @@ module.exports = (function() {
     }
     return newElement;
   };
+  // Replace all children of `parent` with the nodes in the list `children`
   Workbook.prototype.replaceChildren = function(parent, children) {
     parent.delSlice(0, parent.len());
     children.forEach(function(child) {
       parent.append(child);
     });
   };
+  // Calculate the current row based on a source row and a number of new rows
+  // that have been inserted above
   Workbook.prototype.getCurrentRow = function(row, rowsInserted) {
     return parseInt(row.attrib.r, 10) + rowsInserted;
   };
+  // Calculate the current cell based on asource cell, the current row index,
+  // and a number of new cells that have been inserted so far
   Workbook.prototype.getCurrentCell = function(cell, currentRow, cellsInserted) {
     var colNum, colRef, self;
     self = this;
@@ -800,6 +882,7 @@ module.exports = (function() {
       col: self.numToChar(colNum + cellsInserted)
     });
   };
+  // Adjust the row `spans` attribute by `cellsInserted`
   Workbook.prototype.updateRowSpan = function(row, cellsInserted) {
     var rowSpan;
     if (cellsInserted !== 0 && row.attrib.spans) {
@@ -810,6 +893,7 @@ module.exports = (function() {
       row.attrib.spans = rowSpan.join(':');
     }
   };
+  // Split a range like "A1:B1" into {start: "A1", end: "B1"}
   Workbook.prototype.splitRange = function(range) {
     var split;
     split = range.split(':');
@@ -818,15 +902,19 @@ module.exports = (function() {
       end: split[1]
     };
   };
+  // Join into a a range like "A1:B1" an object like {start: "A1", end: "B1"}
   Workbook.prototype.joinRange = function(range) {
     return range.start + ':' + range.end;
   };
+  // Look for any merged cell or named range definitions to the right of
+  // `currentCell` and push right by `numCols`.
   Workbook.prototype.pushRight = function(workbook, sheet, currentCell, numCols) {
     var cellRef, currentCol, currentRow, self;
     self = this;
     cellRef = self.splitRef(currentCell);
     currentRow = cellRef.row;
     currentCol = self.charToNum(cellRef.col);
+    // Update merged cells on the same row, at a higher column
     sheet.findall('mergeCells/mergeCell').forEach(function(mergeCell) {
       var mergeEnd, mergeEndCol, mergeRange, mergeStart, mergeStartCol;
       mergeRange = self.splitRange(mergeCell.attrib.ref);
@@ -843,6 +931,7 @@ module.exports = (function() {
         });
       }
     });
+    // Named cells/ranges
     workbook.findall('definedNames/definedName').forEach(function(name) {
       var namedCol, namedEnd, namedEndCol, namedRange, namedRef, namedStart, namedStartCol, ref;
       ref = name.text;
@@ -870,10 +959,13 @@ module.exports = (function() {
       }
     });
   };
+  // Look for any merged cell, named table or named range definitions below
+  // `currentRow` and push down by `numRows` (used when rows are inserted).
   Workbook.prototype.pushDown = function(workbook, sheet, tables, currentRow, numRows) {
     var mergeCells, self;
     self = this;
     mergeCells = sheet.find('mergeCells');
+    // Update merged cells below this row
     sheet.findall('mergeCells/mergeCell').forEach(function(mergeCell) {
       var i, mergeEnd, mergeRange, mergeStart, newMergeCell;
       mergeRange = self.splitRange(mergeCell.attrib.ref);
@@ -887,6 +979,7 @@ module.exports = (function() {
           end: self.joinRef(mergeEnd)
         });
       }
+      //add new merge cell
       if (mergeStart.row === currentRow) {
         i = 1;
         while (i <= numRows) {
@@ -903,6 +996,7 @@ module.exports = (function() {
         }
       }
     });
+    // Update named tables below this row
     tables.forEach(function(table) {
       var autoFilter, tableEnd, tableRange, tableRoot, tableStart;
       tableRoot = table.root;
@@ -918,10 +1012,12 @@ module.exports = (function() {
         });
         autoFilter = tableRoot.find('autoFilter');
         if (autoFilter !== null) {
+          // XXX: This is a simplification that may stomp on some configurations
           autoFilter.attrib.ref = tableRoot.attrib.ref;
         }
       }
     });
+    // Named cells/ranges
     workbook.findall('definedNames/definedName').forEach(function(name) {
       var namedEnd, namedRange, namedRef, namedStart, ref;
       ref = name.text;
